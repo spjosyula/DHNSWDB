@@ -155,6 +155,11 @@ class IntentAwareHNSWSearcher:
 
         entry_node = self.graph.get_node(self.last_entry_used)
 
+        # Safety check: if entry node is invalid, use graph's default entry
+        if entry_node is None:
+            self.last_entry_used = self.graph.entry_point
+            entry_node = self.graph.get_node(self.last_entry_used)
+
         # Search from top layer down to layer 1
         current_nearest = [self.last_entry_used]
         for layer in range(entry_node.level, 0, -1):
