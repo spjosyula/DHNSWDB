@@ -15,5 +15,7 @@ Components:
 
 from dynhnsw.hnsw.distance import cosine_similarity, cosine_distance
 from dynhnsw.hnsw.graph import HNSWNode, HNSWGraph
+from dynhnsw.hnsw.builder import HNSWBuilder
+from dynhnsw.hnsw.searcher import HNSWSearcher
 
-__all__ = ["cosine_similarity", "cosine_distance", "HNSWNode", "HNSWGraph"]
+__all__ = ["cosine_similarity", "cosine_distance", "HNSWNode", "HNSWGraph", "HNSWBuilder", "HNSWSearcher"]
