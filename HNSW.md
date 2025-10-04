@@ -1045,6 +1045,4 @@ SEARCH-LAYER(q, entry_points, num_closest, layer):
 
 **Version**: 1.0
 **Date**: October 4, 2025
-**Author**: AI Analysis
-**Project**: DynHNSW
-**Repository**: DHNSWDB by spjosyula
+
