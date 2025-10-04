@@ -1,5 +1,6 @@
 # DynHNSW - Dynamic Intent-Aware Vector Database
 
+<<<<<<< HEAD
 A research-focused Python library for vector similarity search with **adaptive, intent-aware indexing**. Unlike traditional vector databases, DynHNSW learns from query patterns and feedback to optimize search behavior for different user intents.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -22,6 +23,11 @@ The system:
 2. **Learns optimal entry points** per intent from user feedback
 3. **Adapts search** to start from intent-specific locations in the graph
 4. **Maintains stability** even with noisy feedback
+=======
+Experimenting with **smart, query-aware indexes**. Instead of being static, this index can adjust start-point behavior based on the query and learn from feedback.  
+
+Basically a normal HNSW graph, but that understands a more efficient starting point by learning through user queries.
+>>>>>>> dcd13bb93b2394aea4075416cda733c88b904a22
 
 ---
 
