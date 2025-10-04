@@ -49,7 +49,7 @@ class IntentAwareHNSWSearcher:
         enable_adaptation: bool = True,
         enable_intent_detection: bool = True,
         confidence_threshold: float = 0.7,
-        min_queries_for_clustering: int = 50,
+        min_queries_for_clustering: int = 30,
     ) -> None:
         """Initialize intent-aware HNSW searcher.
 

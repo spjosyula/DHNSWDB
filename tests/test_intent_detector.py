@@ -36,7 +36,7 @@ class TestIntentDetectorInitialization:
         detector = IntentDetector()
 
         assert detector.k_intents == 5
-        assert detector.min_queries == 50
+        assert detector.min_queries == 30
         assert detector.kmeans is None
         assert detector.total_queries == 0
 

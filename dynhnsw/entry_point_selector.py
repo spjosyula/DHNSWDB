@@ -33,8 +33,9 @@ class EntryPointSelector:
         self,
         k_intents: int,
         graph: HNSWGraph,
-        min_layer_for_entry: int = 2,
+        min_layer_for_entry: int = 1,
         learning_rate: float = 0.1,
+        exploration_rate: float = 0.1,
     ) -> None:
         """Initialize entry point selector.
 
@@ -43,11 +44,13 @@ class EntryPointSelector:
             graph: HNSW graph to search
             min_layer_for_entry: Minimum layer for entry point candidates
             learning_rate: Learning rate for score updates
+            exploration_rate: Probability of random exploration (epsilon-greedy)
         """
         self.k_intents = k_intents
         self.graph = graph
         self.min_layer_for_entry = min_layer_for_entry
         self.learning_rate = learning_rate
+        self.exploration_rate = exploration_rate
 
         # Get candidate entry points (high-layer nodes)
         self.candidate_entries = self._get_high_layer_nodes()
@@ -103,7 +106,7 @@ class EntryPointSelector:
         confidence: float,
         confidence_threshold: float = 0.5
     ) -> int:
-        """Select entry point for given intent.
+        """Select entry point for given intent using epsilon-greedy strategy.
 
         Args:
             intent_id: Query intent cluster ID
@@ -121,8 +124,13 @@ class EntryPointSelector:
         if intent_id >= self.k_intents:
             return self.graph.entry_point
 
-        # Return best entry for this intent
-        return self.best_entries[intent_id]
+        # Epsilon-greedy: explore with probability exploration_rate
+        if np.random.random() < self.exploration_rate:
+            # Explore: select random candidate entry
+            return int(np.random.choice(self.candidate_entries))
+        else:
+            # Exploit: return best entry for this intent
+            return self.best_entries[intent_id]
 
     def update_from_feedback(
         self,

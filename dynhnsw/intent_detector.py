@@ -24,7 +24,7 @@ class IntentDetector:
     def __init__(
         self,
         k_intents: int = 5,
-        min_queries_for_clustering: int = 50,
+        min_queries_for_clustering: int = 30,
         query_buffer_size: int = 1000,
         confidence_threshold: float = 0.7,
         random_state: int = 42,
