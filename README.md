@@ -300,13 +300,14 @@ dynhnsw/
 ├── intent_aware_hnsw.py     # Adaptive search engine
 ├── intent_detector.py       # K-means intent clustering
 ├── ef_search_selector.py    # Q-learning ef_search optimization
-├── entry_point_selector.py  # Entry point learning (legacy)
 ├── feedback.py              # Feedback collection
 ├── performance_monitor.py   # Performance tracking
 └── hnsw/
     ├── graph.py             # HNSW graph structure
     ├── builder.py           # Graph construction
-    └── distance.py          # Distance metrics
+    ├── searcher.py          # HNSW search algorithm
+    ├── distance.py          # Distance metrics
+    └── utils.py             # HNSW utilities
 ```
 
 **Key Components:**

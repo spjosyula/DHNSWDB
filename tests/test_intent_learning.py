@@ -1,8 +1,8 @@
 """
 Integration tests for intent-aware adaptive learning.
 
-These tests validate that the intent detection and entry point learning
-actually improve search quality and converge correctly.
+These tests validate that the intent detection and ef_search Q-learning
+actually improve search efficiency and converge correctly.
 """
 
 import numpy as np
@@ -155,8 +155,8 @@ def test_intent_detection_on_synthetic_clusters():
                 f"Cluster {cluster_id} has low intent consistency: {consistency:.2f}"
 
 
-def test_entry_point_learning_convergence():
-    """Test that entry point scores converge with feedback"""
+def test_ef_search_learning_convergence():
+    """Test that Q-learning for ef_search converges with feedback"""
     vectors, labels, centers = generate_clustered_dataset(
         n_clusters=3, vectors_per_cluster=80, dimension=64
     )
@@ -173,8 +173,8 @@ def test_entry_point_learning_convergence():
     ids = [f"cluster_{label}_vec_{i}" for i, (v, label) in enumerate(zip(vectors, labels))]
     store.add(vectors, ids=ids)
 
-    # Track entry point scores over time
-    score_history = []
+    # Track Q-values over time
+    q_value_history = []
 
     # Issue queries with feedback for 60 iterations
     for iteration in range(60):
@@ -189,29 +189,32 @@ def test_entry_point_learning_convergence():
         relevant_ids = [r["id"] for r in results if r["id"].startswith(f"cluster_{cluster_id}_")]
         store.provide_feedback(relevant_ids=relevant_ids)
 
-        # Record entry point scores (if clustering is active)
-        if store._searcher.entry_selector and iteration >= 30:
-            stats = store._searcher.entry_selector.get_statistics()
-            # Record scores for intent 0 as example
-            if len(stats["entry_scores"]) > 0:
-                intent_0_scores = stats["entry_scores"][0]
-                score_history.append(intent_0_scores)
+        # Record Q-values (if clustering is active)
+        if store._searcher.ef_selector and iteration >= 30:
+            stats = store._searcher.ef_selector.get_statistics()
+            # Record Q-values for intent 0 as example
+            if len(stats["per_intent"]) > 0:
+                intent_0_q_values = stats["per_intent"][0]["q_values"]
+                # Extract non-None Q-values
+                q_vals = [v for v in intent_0_q_values.values() if v is not None]
+                if q_vals:
+                    q_value_history.append(q_vals)
 
-    # Check convergence: scores should stabilize (low variance in last 10 iterations)
-    if len(score_history) >= 20:
-        last_10_scores = score_history[-10:]
+    # Check convergence: Q-values should stabilize (low variance in last 10 iterations)
+    if len(q_value_history) >= 20:
+        last_10_q_values = q_value_history[-10:]
 
-        # Compute variance across last 10 score snapshots
-        # Each snapshot is a list of scores for different entry points
-        # We want variance across time for each entry point to be low
-        num_entries = len(last_10_scores[0])
-        for entry_idx in range(num_entries):
-            scores_over_time = [snapshot[entry_idx] for snapshot in last_10_scores]
-            variance = np.var(scores_over_time)
+        # Compute variance across last 10 Q-value snapshots
+        # Each snapshot is a list of Q-values for different ef_search values
+        # We want variance across time to be low (converged)
+        num_ef_values = min(len(snapshot) for snapshot in last_10_q_values)
+        for ef_idx in range(num_ef_values):
+            q_values_over_time = [snapshot[ef_idx] for snapshot in last_10_q_values if ef_idx < len(snapshot)]
+            variance = np.var(q_values_over_time)
 
-            # Variance should be small (<0.05) indicating convergence
-            assert variance < 0.1, \
-                f"Entry point {entry_idx} scores not converged: variance={variance:.4f}"
+            # Variance should be small indicating convergence
+            assert variance < 10.0, \
+                f"ef_search Q-value {ef_idx} not converged: variance={variance:.4f}"
 
 
 def test_cold_start_to_warm_transition():
@@ -406,9 +409,9 @@ def test_adaptive_vs_static_comparison():
     print(f"  Adaptive: recall={late_adaptive_recall:.3f}, satisfaction={late_adaptive_satisfaction:.3f}")
     print(f"  Static:   recall={late_static_recall:.3f}, satisfaction={late_static_satisfaction:.3f}")
 
-    # Research finding: Adaptive may have slightly lower recall due to
-    # optimizing entry points for specific intents rather than global optimality.
-    # This is a documented trade-off: intent-specific optimization vs global recall.
+    # Research finding: Adaptive ef_search learning optimizes for efficiency
+    # (satisfaction per unit latency) by learning intent-specific ef_search values.
+    # This is Q-learning adaptation, not entry point optimization.
     #
     # Allow up to 10% recall degradation (this is acceptable for research)
     assert late_adaptive_recall >= late_static_recall - 0.10, \
@@ -416,12 +419,12 @@ def test_adaptive_vs_static_comparison():
 
     # Key research claim: Satisfaction (user-perceived relevance) should improve or stay same
     # Satisfaction measures how well results match the query's intent cluster,
-    # which is what the adaptive system is optimizing for
+    # which adaptive ef_search optimizes for through Q-learning
     assert late_adaptive_satisfaction >= late_static_satisfaction - 0.05, \
         f"Adaptive satisfaction worse: {late_adaptive_satisfaction:.3f} vs static {late_static_satisfaction:.3f}"
 
-    # In many cases, adaptive should have BETTER satisfaction despite same/lower recall
-    # This validates the approach: trading some global recall for better intent-matching
+    # In many cases, adaptive should have BETTER efficiency (satisfaction/latency)
+    # This validates the approach: learning intent-specific ef_search for better efficiency
 
 
 def test_adaptive_does_not_degrade_with_noise():

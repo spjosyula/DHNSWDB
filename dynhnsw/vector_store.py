@@ -13,6 +13,7 @@ from dynhnsw.hnsw.builder import HNSWBuilder
 from dynhnsw.intent_aware_hnsw import IntentAwareHNSWSearcher
 from dynhnsw.hnsw.distance import normalize_vector
 from dynhnsw.hnsw.utils import assign_layer
+from dynhnsw.config import DynHNSWConfig, get_default_config
 
 Vector = npt.NDArray[np.float32]
 
@@ -51,14 +52,15 @@ class VectorStore:
         self,
         dimension: int,
         max_elements: int = 10000,
-        ef_construction: int = 200,
-        M: int = 16,
-        ef_search: int = 50,
+        ef_construction: int = None,
+        M: int = None,
+        ef_search: int = None,
         normalize: bool = True,
         enable_intent_detection: bool = True,
-        k_intents: int = 5,
+        k_intents: int = None,
         learning_rate: float = 0.1,
-        min_queries_for_clustering: int = 30,
+        min_queries_for_clustering: int = None,
+        config: Optional[DynHNSWConfig] = None,
     ) -> None:
         """
         Initialize the vector store.
@@ -72,9 +74,37 @@ class VectorStore:
             normalize: Whether to normalize vectors to unit length (recommended for cosine similarity)
             enable_intent_detection: Enable intent-aware adaptive search
             k_intents: Number of intent clusters for adaptive search
-            learning_rate: Learning rate for entry point adaptation
+            learning_rate: Learning rate for Q-learning (legacy parameter, not used)
             min_queries_for_clustering: Minimum queries before intent clustering starts
+            config: DynHNSWConfig object for advanced configuration. If provided,
+                    overrides individual parameters. Use this for experimental features.
+
+        Example:
+            # Basic usage (default config)
+            store = VectorStore(dimension=384)
+
+            # With custom config
+            from dynhnsw.config import DynHNSWConfig
+            config = DynHNSWConfig(enable_epsilon_decay=True)
+            store = VectorStore(dimension=384, config=config)
         """
+        # Use provided config or create default
+        if config is None:
+            config = get_default_config()
+        self.config = config
+
+        # Override config with explicit parameters (explicit params take precedence)
+        if ef_construction is None:
+            ef_construction = self.config.default_ef_construction
+        if M is None:
+            M = self.config.default_M
+        if ef_search is None:
+            ef_search = self.config.default_ef_search
+        if k_intents is None:
+            k_intents = self.config.k_intents
+        if min_queries_for_clustering is None:
+            min_queries_for_clustering = self.config.min_queries_for_clustering
+
         self.dimension = dimension
         self.max_elements = max_elements
         self.ef_construction = ef_construction
@@ -96,6 +126,7 @@ class VectorStore:
             enable_adaptation=enable_intent_detection,
             enable_intent_detection=enable_intent_detection,
             min_queries_for_clustering=min_queries_for_clustering,
+            config=self.config,  # Pass config to searcher
         )
 
         # Track next node ID

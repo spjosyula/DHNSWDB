@@ -1,13 +1,14 @@
 """Intent-aware adaptive HNSW searcher.
 
-This module integrates intent detection with adaptive entry point selection.
-Different query intents learn optimal entry points for improved search quality.
+This module integrates intent detection with adaptive ef_search selection.
+Different query intents learn optimal ef_search values for improved search efficiency.
 
 Mathematical Foundation:
-- Detect query intent using K-means clustering
-- Learn optimal entry points per intent from feedback
-- Search uses pure HNSW algorithm, but starts from intent-specific entry
-- Avoids semantic mismatch of edge weight modulation
+- Detect query intent using K-means clustering on query embeddings
+- Learn optimal ef_search values per intent using Q-learning
+- Reward function: efficiency = satisfaction / latency (maximize quality per time)
+- Search uses pure HNSW algorithm with intent-specific ef_search parameter
+- No edge weight modulation - adaptation is purely through search parameter tuning
 """
 
 import time
@@ -21,7 +22,7 @@ from dynhnsw.intent_detector import IntentDetector
 from dynhnsw.ef_search_selector import EfSearchSelector
 from dynhnsw.feedback import FeedbackCollector, QueryFeedback
 from dynhnsw.performance_monitor import PerformanceMonitor, PerformanceMetrics
-from dynhnsw.graph_validator import GraphValidator
+from dynhnsw.config import DynHNSWConfig, get_default_config
 
 Vector = npt.NDArray[np.float32]
 DocumentId = int
@@ -49,8 +50,9 @@ class IntentAwareHNSWSearcher:
         learning_rate: float = 0.1,
         enable_adaptation: bool = True,
         enable_intent_detection: bool = True,
-        confidence_threshold: float = 0.7,
+        confidence_threshold: float = None,
         min_queries_for_clustering: int = 30,
+        config: Optional[DynHNSWConfig] = None,
     ) -> None:
         """Initialize intent-aware HNSW searcher.
 
@@ -58,12 +60,22 @@ class IntentAwareHNSWSearcher:
             graph: HNSW graph structure
             ef_search: Default search candidate list size
             k_intents: Number of intent clusters
-            learning_rate: ef_search learning rate
+            learning_rate: ef_search learning rate (legacy, not used in Q-learning)
             enable_adaptation: If False, behaves like static HNSW
             enable_intent_detection: If False, uses default ef_search
             confidence_threshold: Minimum confidence for intent-specific ef_search
             min_queries_for_clustering: Queries needed before clustering starts
+            config: DynHNSWConfig object for advanced configuration
         """
+        # Use provided config or create default
+        if config is None:
+            config = get_default_config()
+        self.config = config
+
+        # Use config values if parameters not explicitly provided
+        if confidence_threshold is None:
+            confidence_threshold = self.config.confidence_threshold
+
         self.graph = graph
         self.ef_search = ef_search
         self.enable_adaptation = enable_adaptation
@@ -78,11 +90,19 @@ class IntentAwareHNSWSearcher:
             confidence_threshold=confidence_threshold
         ) if enable_intent_detection else None
 
-        # Adaptive ef_search selection (replaces entry point learning)
+        # Adaptive ef_search selection using Q-learning
+        # Use config to determine epsilon decay mode
+        epsilon_decay_mode = "none"
+        if self.config.enable_epsilon_decay:
+            epsilon_decay_mode = self.config.epsilon_decay_mode
+
         self.ef_selector = EfSearchSelector(
             k_intents=k_intents,
             default_ef=ef_search,
-            learning_rate=learning_rate
+            learning_rate=learning_rate,
+            exploration_rate=self.config.exploration_rate,
+            epsilon_decay_mode=epsilon_decay_mode,
+            min_epsilon=self.config.min_epsilon,
         ) if enable_adaptation else None
 
         # Feedback and monitoring
@@ -93,22 +113,11 @@ class IntentAwareHNSWSearcher:
             window_size=50
         )
 
-        # Graph validation (keep for potential future use)
-        self.graph_validator = GraphValidator()
-        self._initialize_validator()
-
         # Track current intent and ef_search used
         self.last_intent_id: int = -1
         self.last_confidence: float = 0.0
         self.last_ef_used: int = ef_search
         self.query_count: int = 0
-
-    def _initialize_validator(self) -> None:
-        """Initialize graph validator with current graph structure."""
-        for node_id, node in self.graph.nodes.items():
-            for neighbor_id in node.get_neighbors(layer=0):
-                if node_id < neighbor_id:
-                    self.graph_validator.add_edge(node_id, neighbor_id)
 
     def search(
         self, query: Vector, k: int, ef_search: Optional[int] = None
