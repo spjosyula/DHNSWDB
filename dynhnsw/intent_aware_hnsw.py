@@ -18,7 +18,7 @@ import numpy.typing as npt
 from dynhnsw.hnsw.graph import HNSWGraph
 from dynhnsw.hnsw.distance import cosine_distance
 from dynhnsw.intent_detector import IntentDetector
-from dynhnsw.entry_point_selector import EntryPointSelector
+from dynhnsw.ef_search_selector import EfSearchSelector
 from dynhnsw.feedback import FeedbackCollector, QueryFeedback
 from dynhnsw.performance_monitor import PerformanceMonitor, PerformanceMetrics
 from dynhnsw.graph_validator import GraphValidator
@@ -29,15 +29,16 @@ EdgeId = Tuple[int, int]
 
 
 class IntentAwareHNSWSearcher:
-    """Intent-aware HNSW searcher with per-intent entry point selection.
+    """Intent-aware HNSW searcher with adaptive ef_search per intent.
 
-    This searcher detects query intent and selects optimal entry points for
-    each intent based on feedback. Uses pure HNSW search algorithm but adapts
-    where search starts based on query patterns.
+    This searcher detects query intent and learns optimal ef_search values for
+    each intent based on feedback. Different query types (exploratory vs precise)
+    benefit from different search breadths.
 
-    Key difference from edge-weight approach:
-    - Semantically correct: learns entry points (graph navigation)
-    - Not edge weights (which don't apply to query-to-node distances)
+    Core adaptation:
+    - Learns ef_search values that maximize efficiency (satisfaction/latency) per intent
+    - Exploratory queries → higher ef_search (broader recall)
+    - Precise queries → lower ef_search (faster, focused results)
     """
 
     def __init__(
@@ -57,10 +58,10 @@ class IntentAwareHNSWSearcher:
             graph: HNSW graph structure
             ef_search: Default search candidate list size
             k_intents: Number of intent clusters
-            learning_rate: Entry point score learning rate
+            learning_rate: ef_search learning rate
             enable_adaptation: If False, behaves like static HNSW
-            enable_intent_detection: If False, uses default entry point
-            confidence_threshold: Minimum confidence for intent-specific entry
+            enable_intent_detection: If False, uses default ef_search
+            confidence_threshold: Minimum confidence for intent-specific ef_search
             min_queries_for_clustering: Queries needed before clustering starts
         """
         self.graph = graph
@@ -77,10 +78,10 @@ class IntentAwareHNSWSearcher:
             confidence_threshold=confidence_threshold
         ) if enable_intent_detection else None
 
-        # Entry point selection (replaces edge weight learning)
-        self.entry_selector = EntryPointSelector(
+        # Adaptive ef_search selection (replaces entry point learning)
+        self.ef_selector = EfSearchSelector(
             k_intents=k_intents,
-            graph=graph,
+            default_ef=ef_search,
             learning_rate=learning_rate
         ) if enable_adaptation else None
 
@@ -96,10 +97,10 @@ class IntentAwareHNSWSearcher:
         self.graph_validator = GraphValidator()
         self._initialize_validator()
 
-        # Track current intent and entry used
+        # Track current intent and ef_search used
         self.last_intent_id: int = -1
         self.last_confidence: float = 0.0
-        self.last_entry_used: int = graph.entry_point
+        self.last_ef_used: int = ef_search
         self.query_count: int = 0
 
     def _initialize_validator(self) -> None:
@@ -112,12 +113,12 @@ class IntentAwareHNSWSearcher:
     def search(
         self, query: Vector, k: int, ef_search: Optional[int] = None
     ) -> List[Tuple[DocumentId, float]]:
-        """Search for k nearest neighbors with intent-aware entry point selection.
+        """Search for k nearest neighbors with intent-aware ef_search adaptation.
 
         Flow:
         1. Detect query intent (if enabled)
-        2. Select optimal entry point for that intent (if adaptation enabled)
-        3. Perform standard HNSW search from selected entry point
+        2. Select optimal ef_search for that intent (if adaptation enabled)
+        3. Perform HNSW search with adaptive ef_search
         4. Track state for feedback learning
 
         Args:
@@ -139,35 +140,35 @@ class IntentAwareHNSWSearcher:
             self.last_intent_id = -1
             self.last_confidence = 0.0
 
-        # Step 2: Select entry point based on intent
-        if self.enable_adaptation and self.entry_selector:
-            self.last_entry_used = self.entry_selector.select_entry(
+        # Step 2: Select ef_search based on intent
+        if self.enable_adaptation and self.ef_selector and ef_search is None:
+            # Use learned ef_search for this intent
+            ef = self.ef_selector.select_ef(
                 intent_id=self.last_intent_id,
                 confidence=self.last_confidence,
                 confidence_threshold=self.confidence_threshold
             )
+            self.last_ef_used = ef
         else:
-            self.last_entry_used = self.graph.entry_point
+            # Use provided ef_search or default
+            ef = ef_search if ef_search is not None else self.ef_search
+            self.last_ef_used = ef
 
-        # Step 3: Standard HNSW search from selected entry
-        ef = ef_search if ef_search is not None else self.ef_search
+        # Ensure ef is at least k
         ef = max(ef, k)
 
-        entry_node = self.graph.get_node(self.last_entry_used)
-
-        # Safety check: if entry node is invalid, use graph's default entry
-        if entry_node is None:
-            self.last_entry_used = self.graph.entry_point
-            entry_node = self.graph.get_node(self.last_entry_used)
+        # Step 3: Standard HNSW search with adaptive ef_search
+        entry_point = self.graph.entry_point
+        entry_node = self.graph.get_node(entry_point)
 
         # Search from top layer down to layer 1
-        current_nearest = [self.last_entry_used]
+        current_nearest = [entry_point]
         for layer in range(entry_node.level, 0, -1):
             current_nearest = self._search_layer(
                 query=query, entry_points=current_nearest, num_closest=1, layer=layer
             )
 
-        # At layer 0, expand search with ef_search
+        # At layer 0, expand search with adaptive ef_search
         candidates = self._search_layer(
             query=query, entry_points=current_nearest, num_closest=ef, layer=0
         )
@@ -259,14 +260,19 @@ class IntentAwareHNSWSearcher:
         return cosine_distance(vec1, vec2)
 
     def provide_feedback(
-        self, query: Vector, result_ids: List[DocumentId], relevant_ids: Set[DocumentId]
+        self,
+        query: Vector,
+        result_ids: List[DocumentId],
+        relevant_ids: Set[DocumentId],
+        latency_ms: float,
     ) -> None:
-        """Provide feedback for the last query to update entry point scores.
+        """Provide feedback for the last query to update ef_search learning.
 
         Args:
             query: The query vector
             result_ids: Result IDs returned by search
             relevant_ids: Which results were relevant (user feedback)
+            latency_ms: Query latency in milliseconds
         """
         if not self.enable_adaptation:
             return
@@ -279,14 +285,17 @@ class IntentAwareHNSWSearcher:
             timestamp=time.time()
         )
 
-        # Update entry point scores based on satisfaction
-        if self.entry_selector:
+        # Update ef_search learning based on satisfaction and latency
+        if self.ef_selector:
             satisfaction = feedback.get_satisfaction_score()
-            self.entry_selector.update_from_feedback(
+            self.ef_selector.update_from_feedback(
                 intent_id=self.last_intent_id,
-                entry_used=self.last_entry_used,
-                satisfaction=satisfaction
+                ef_used=self.last_ef_used,
+                satisfaction=satisfaction,
+                latency_ms=latency_ms
             )
+            # Decay exploration rate over time (more exploration early, less later)
+            self.ef_selector.decay_exploration()
 
     def _handle_intent_drift(self) -> None:
         """Handle detected intent drift by re-clustering.
@@ -325,9 +334,9 @@ class IntentAwareHNSWSearcher:
                 self._trigger_reset()
 
     def _trigger_reset(self) -> None:
-        """Trigger reset of entry point scores due to performance degradation."""
-        if self.entry_selector:
-            self.entry_selector.reset_scores()
+        """Trigger reset of learned ef_search values due to performance degradation."""
+        if self.ef_selector:
+            self.ef_selector.reset_all()
         self.performance_monitor.reset_degradation_state()
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -354,8 +363,8 @@ class IntentAwareHNSWSearcher:
         if self.enable_intent_detection and self.intent_detector:
             base_stats["intent_detection"] = self.intent_detector.get_statistics()
 
-        # Add entry point selection statistics
-        if self.enable_adaptation and self.entry_selector:
-            base_stats["entry_selection"] = self.entry_selector.get_statistics()
+        # Add ef_search selection statistics
+        if self.enable_adaptation and self.ef_selector:
+            base_stats["ef_search_selection"] = self.ef_selector.get_statistics()
 
         return base_stats

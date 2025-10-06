@@ -4,6 +4,7 @@ Core vector storage and HNSW index management for DynHNSW
 
 from typing import List, Union, Optional, Set, Dict, Any
 import pickle
+import time
 import numpy as np
 import numpy.typing as npt
 
@@ -114,6 +115,7 @@ class VectorStore:
         self._last_query_vector: Optional[Vector] = None
         self._last_result_node_ids: List[int] = []
         self._last_result_external_ids: List[str] = []
+        self._last_latency_ms: float = 0.0
 
     def add(
         self,
@@ -237,8 +239,13 @@ class VectorStore:
         # Store query for potential feedback
         self._last_query_vector = query.copy()
 
-        # Perform search using intent-aware searcher
+        # Measure search latency
+        start_time = time.perf_counter()
         results = self._searcher.search(query, k=k, ef_search=ef_search)
+        end_time = time.perf_counter()
+
+        # Store latency in milliseconds
+        self._last_latency_ms = (end_time - start_time) * 1000.0
 
         # Store result node IDs for feedback
         self._last_result_node_ids = [node_id for node_id, _ in results]
@@ -292,11 +299,12 @@ class VectorStore:
             if ext_id in self._id_to_node:
                 relevant_node_ids.add(self._id_to_node[ext_id])
 
-        # Pass feedback to intent-aware searcher
+        # Pass feedback to intent-aware searcher (with latency)
         self._searcher.provide_feedback(
             query=self._last_query_vector,
             result_ids=self._last_result_node_ids,
-            relevant_ids=relevant_node_ids
+            relevant_ids=relevant_node_ids,
+            latency_ms=self._last_latency_ms
         )
 
     def delete(self, ids: Union[str, List[str]]) -> None:
