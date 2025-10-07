@@ -91,7 +91,7 @@ class IntentAwareHNSWSearcher:
         ) if enable_intent_detection else None
 
         # Adaptive ef_search selection using Q-learning
-        # Use config to determine epsilon decay mode
+        # Use config to determine epsilon decay mode and UCB1 settings
         epsilon_decay_mode = "none"
         if self.config.enable_epsilon_decay:
             epsilon_decay_mode = self.config.epsilon_decay_mode
@@ -103,6 +103,9 @@ class IntentAwareHNSWSearcher:
             exploration_rate=self.config.exploration_rate,
             epsilon_decay_mode=epsilon_decay_mode,
             min_epsilon=self.config.min_epsilon,
+            use_ucb1=self.config.enable_ucb1,
+            ucb1_c=self.config.ucb1_exploration_constant,
+            use_warm_start=self.config.enable_ucb1_warm_start if hasattr(self.config, 'enable_ucb1_warm_start') else False,
         ) if enable_adaptation else None
 
         # Feedback and monitoring

@@ -26,9 +26,11 @@ class DynHNSWConfig:
 
     Feature Flags:
         enable_epsilon_decay: Enable epsilon decay (False recommended, no proven benefit)
+        enable_ucb1: Enable UCB1 exploration strategy (mutually exclusive with epsilon decay)
 
     Hyperparameters:
         exploration_rate: Initial epsilon for epsilon-greedy (0.0 to 1.0)
+        ucb1_exploration_constant: UCB1 exploration parameter (typically sqrt(2) = 1.414)
         epsilon_decay_mode: "none", "multiplicative", or "glie"
         min_epsilon: Minimum epsilon value
         k_intents: Number of intent clusters
@@ -38,9 +40,12 @@ class DynHNSWConfig:
 
     # Feature flags
     enable_epsilon_decay: bool = False
+    enable_ucb1: bool = False
+    enable_ucb1_warm_start: bool = False
 
     # Hyperparameters
     exploration_rate: float = 0.15
+    ucb1_exploration_constant: float = 1.414  # sqrt(2) - theoretically motivated default
     epsilon_decay_mode: str = "none"
     min_epsilon: float = 0.01
     k_intents: int = 3
@@ -57,6 +62,10 @@ class DynHNSWConfig:
 
     def __post_init__(self):
         """Validate configuration."""
+        # Mutual exclusivity: UCB1 and epsilon decay
+        if self.enable_ucb1 and self.enable_epsilon_decay:
+            raise ValueError("Cannot enable both UCB1 and epsilon decay - choose one exploration strategy")
+
         valid_decay_modes = ["none", "multiplicative", "glie"]
         if self.epsilon_decay_mode not in valid_decay_modes:
             raise ValueError(f"epsilon_decay_mode must be one of {valid_decay_modes}")
@@ -66,6 +75,9 @@ class DynHNSWConfig:
 
         if not 0.0 <= self.min_epsilon <= 1.0:
             raise ValueError("min_epsilon must be in [0.0, 1.0]")
+
+        if self.ucb1_exploration_constant <= 0.0:
+            raise ValueError("ucb1_exploration_constant must be positive")
 
         if self.k_intents < 1:
             raise ValueError("k_intents must be >= 1")
@@ -78,6 +90,11 @@ class DynHNSWConfig:
             self.enable_epsilon_decay = False
         if not self.enable_epsilon_decay:
             self.epsilon_decay_mode = "none"
+
+        # Auto-sync UCB1 settings
+        if self.enable_ucb1:
+            self.epsilon_decay_mode = "none"
+            self.enable_epsilon_decay = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
@@ -105,6 +122,8 @@ class DynHNSWConfig:
         features = []
         if self.enable_epsilon_decay:
             features.append(f"epsilon_decay={self.epsilon_decay_mode}")
+        if self.enable_ucb1:
+            features.append(f"ucb1_c={self.ucb1_exploration_constant}")
 
         features_str = ", ".join(features) if features else "default"
 
@@ -132,4 +151,24 @@ def get_epsilon_decay_config() -> DynHNSWConfig:
         config_name="epsilon_decay",
         enable_epsilon_decay=True,
         epsilon_decay_mode="glie",
+    )
+
+
+def get_ucb1_config(warm_start: bool = False) -> DynHNSWConfig:
+    """Configuration with UCB1 exploration strategy.
+
+    Uses Upper Confidence Bound (UCB1) algorithm for action selection.
+    Theoretically optimal for stationary multi-armed bandits.
+
+    Args:
+        warm_start: Enable warm start with HNSW-theory priors (experimental, generally harmful)
+
+    Note: Empirical testing showed that warm start and reduced exploration constant
+    (c<1.414) significantly hurt performance. Use default parameters for best results.
+    """
+    return DynHNSWConfig(
+        config_name="ucb1",
+        enable_ucb1=True,
+        enable_ucb1_warm_start=warm_start,
+        ucb1_exploration_constant=1.414,  # sqrt(2) - do not change
     )

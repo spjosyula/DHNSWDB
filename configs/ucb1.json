@@ -1,0 +1,15 @@
+{
+  "enable_epsilon_decay": false,
+  "enable_ucb1": true,
+  "exploration_rate": 0.15,
+  "ucb1_exploration_constant": 1.414,
+  "epsilon_decay_mode": "none",
+  "min_epsilon": 0.01,
+  "k_intents": 3,
+  "min_queries_for_clustering": 30,
+  "confidence_threshold": 0.1,
+  "default_ef_search": 100,
+  "default_M": 16,
+  "default_ef_construction": 200,
+  "config_name": "ucb1"
+}

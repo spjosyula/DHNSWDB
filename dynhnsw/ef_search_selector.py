@@ -39,6 +39,9 @@ class EfSearchSelector:
         ef_candidates: List[int] = None,
         epsilon_decay_mode: str = "multiplicative",  # "multiplicative", "glie", or "none"
         min_epsilon: float = 0.01,
+        use_ucb1: bool = False,
+        ucb1_c: float = 1.414,
+        use_warm_start: bool = False,
     ) -> None:
         """Initialize Q-learning based ef_search selector.
 
@@ -52,6 +55,9 @@ class EfSearchSelector:
             ef_candidates: List of ef_search values to try (actions/arms)
             epsilon_decay_mode: "multiplicative" (ε *= 0.95), "glie" (ε = 1/t), or "none" (fixed)
             min_epsilon: Minimum epsilon value (for multiplicative decay)
+            use_ucb1: Use UCB1 exploration strategy instead of epsilon-greedy
+            ucb1_c: UCB1 exploration constant (typically sqrt(2) = 1.414)
+            use_warm_start: Initialize Q-table with HNSW-theory priors instead of cold start
         """
         self.k_intents = k_intents
         self.default_ef = default_ef
@@ -62,16 +68,27 @@ class EfSearchSelector:
         self.initial_exploration_rate = exploration_rate  # Store initial value
         self.epsilon_decay_mode = epsilon_decay_mode
         self.min_epsilon = min_epsilon
+        self.use_ucb1 = use_ucb1
+        self.ucb1_c = ucb1_c
+        self.use_warm_start = use_warm_start
 
         # Arms/Actions: Candidate ef_search values to explore
         self.ef_candidates = ef_candidates if ef_candidates else [50, 75, 100, 150, 200, 250]
 
         # Q-table: Q(intent, ef_search) = List of observed efficiencies
         # Structure: {intent_id: {ef_value: [efficiency_1, efficiency_2, ...]}}
-        self.q_table: Dict[int, Dict[int, List[float]]] = {
-            intent_id: {ef: [] for ef in self.ef_candidates}
-            for intent_id in range(k_intents)
-        }
+        if use_warm_start:
+            # Warm start with HNSW-theory priors
+            self.q_table: Dict[int, Dict[int, List[float]]] = {
+                intent_id: {ef: [self._get_prior_q_value(ef)] for ef in self.ef_candidates}
+                for intent_id in range(k_intents)
+            }
+        else:
+            # Cold start with empty Q-table
+            self.q_table: Dict[int, Dict[int, List[float]]] = {
+                intent_id: {ef: [] for ef in self.ef_candidates}
+                for intent_id in range(k_intents)
+            }
 
         # Action counts: Number of times each (intent, ef) pair was tried
         self.action_counts: Dict[int, Dict[int, int]] = {
@@ -82,8 +99,32 @@ class EfSearchSelector:
         # Track total feedback count for GLIE decay
         self.total_updates = 0
 
+    def _get_prior_q_value(self, ef: int) -> float:
+        """Get HNSW-theory based prior Q-value for warm start.
+
+        Priors based on HNSW characteristics:
+        - Low ef (20-75): Faster but lower recall → moderate efficiency
+        - Medium ef (100-150): Balanced speed/recall → higher efficiency
+        - High ef (200-350): High recall but slower → moderate efficiency
+
+        Args:
+            ef: ef_search value
+
+        Returns:
+            Prior Q-value (efficiency estimate)
+        """
+        if ef < 100:
+            # Low ef: fast, lower recall
+            return 150.0
+        elif ef <= 150:
+            # Medium ef: balanced (sweet spot for many workloads)
+            return 200.0
+        else:
+            # High ef: high recall, slower
+            return 180.0
+
     def select_ef(self, intent_id: int, confidence: float, confidence_threshold: float = 0.5) -> int:
-        """Select ef_search using epsilon-greedy Q-learning.
+        """Select ef_search using epsilon-greedy or UCB1 strategy.
 
         Args:
             intent_id: Query intent cluster ID
@@ -93,8 +134,6 @@ class EfSearchSelector:
         Returns:
             ef_search value to use for this query
         """
-        import random
-
         # Cold start or low confidence: use default
         if intent_id < 0 or confidence < confidence_threshold:
             return self.default_ef
@@ -102,6 +141,23 @@ class EfSearchSelector:
         # Out of range: use default
         if intent_id >= self.k_intents:
             return self.default_ef
+
+        # Route to appropriate selection strategy
+        if self.use_ucb1:
+            return self._select_ef_ucb1(intent_id)
+        else:
+            return self._select_ef_epsilon_greedy(intent_id)
+
+    def _select_ef_epsilon_greedy(self, intent_id: int) -> int:
+        """Select ef_search using epsilon-greedy strategy.
+
+        Args:
+            intent_id: Query intent cluster ID
+
+        Returns:
+            ef_search value to use for this query
+        """
+        import random
 
         # Epsilon-greedy strategy
         if random.random() < self.exploration_rate:
@@ -121,6 +177,53 @@ class EfSearchSelector:
 
         # Return ef_search with maximum Q-value
         best_ef = max(q_values.items(), key=lambda x: x[1])[0]
+        return best_ef
+
+    def _select_ef_ucb1(self, intent_id: int) -> int:
+        """Select ef_search using UCB1 strategy.
+
+        UCB1 formula: Q(a) + c * sqrt(ln(N) / n(a))
+        where:
+        - Q(a): average reward for action a
+        - c: exploration constant (typically sqrt(2))
+        - N: total actions taken for this intent
+        - n(a): number of times action a was taken
+
+        Args:
+            intent_id: Query intent cluster ID
+
+        Returns:
+            ef_search value to use for this query
+        """
+        import math
+
+        # Total actions taken for this intent
+        total_actions = sum(self.action_counts[intent_id].values())
+
+        # Cold start: try each action once first
+        for ef in self.ef_candidates:
+            if self.action_counts[intent_id][ef] == 0:
+                return ef
+
+        # Compute UCB1 values for all actions
+        ucb_values = {}
+        for ef in self.ef_candidates:
+            n_a = self.action_counts[intent_id][ef]
+            if n_a > 0 and len(self.q_table[intent_id][ef]) > 0:
+                # Q(a): average efficiency observed
+                q_mean = np.mean(self.q_table[intent_id][ef])
+
+                # Exploration bonus: c * sqrt(ln(N) / n(a))
+                exploration_bonus = self.ucb1_c * math.sqrt(math.log(total_actions) / n_a)
+
+                # UCB1 value
+                ucb_values[ef] = q_mean + exploration_bonus
+            else:
+                # Should not happen after cold start, but handle gracefully
+                ucb_values[ef] = float('inf')
+
+        # Select action with highest UCB1 value
+        best_ef = max(ucb_values.items(), key=lambda x: x[1])[0]
         return best_ef
 
     def update_from_feedback(
@@ -205,9 +308,12 @@ class EfSearchSelector:
         stats = {
             "default_ef": self.default_ef,
             "k_intents": self.k_intents,
+            "exploration_strategy": "ucb1" if self.use_ucb1 else "epsilon_greedy",
             "exploration_rate": self.exploration_rate,
             "initial_exploration_rate": self.initial_exploration_rate,
             "epsilon_decay_mode": self.epsilon_decay_mode,
+            "ucb1_enabled": self.use_ucb1,
+            "ucb1_c": self.ucb1_c,
             "total_updates": self.total_updates,
             "ef_candidates": self.ef_candidates,
         }
