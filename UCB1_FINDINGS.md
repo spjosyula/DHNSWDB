@@ -1,3 +1,9 @@
+## Note: Current Recommended Approach
+
+**This document describes a previous research approach.** For the current recommended implementation, see the **Layer-Adaptive Multi-Path Search** documented in the main README.md and `layer_adaptive_test/README.md`. Layer-adaptive achieves +9% to +62.5% recall improvement with simpler implementation than UCB1.
+
+---
+
 ## Executive Summary
 
 UCB1 (Upper Confidence Bound) exploration was evaluated as an alternative to epsilon-greedy for adaptive ef_search selection in DynHNSW. This research investigates when UCB1 provides benefits and when simpler approaches may suffice.

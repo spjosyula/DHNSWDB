@@ -1,5 +1,11 @@
 # Epsilon Decay Experiment: GLIE vs Fixed Epsilon
 
+## Note: Current Recommended Approach
+
+**This document describes a previous research approach.** For the current recommended implementation, see the **Layer-Adaptive Multi-Path Search** documented in the main README.md and `layer_adaptive_test/README.md`. Layer-adaptive achieves +9% to +62.5% recall improvement without requiring epsilon-based exploration.
+
+---
+
 ## Theoretical Improvement
 
 **Hypothesis**: GLIE (Greedy in the Limit with Infinite Exploration) epsilon decay should improve Q-learning efficiency by:

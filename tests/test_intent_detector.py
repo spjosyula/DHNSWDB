@@ -1,323 +1,235 @@
-"""Unit tests for intent detection."""
+"""
+Unit tests for difficulty-based intent detector.
+
+Tests clustering of query difficulties into intent tiers.
+"""
 
 import pytest
 import numpy as np
 from dynhnsw.intent_detector import IntentDetector
 
 
-@pytest.fixture
-def clustered_queries():
-    """Create queries with clear cluster structure."""
-    np.random.seed(42)
+class TestIntentDetectorColdStart:
+    """Tests for cold start behavior."""
 
-    # Cluster 0: centered at [5, 5, ...]
-    cluster_0 = np.random.randn(30, 128).astype(np.float32) + 5.0
+    def test_cold_start_returns_minus_one(self):
+        """Test that detector returns -1 during cold start."""
+        detector = IntentDetector(n_intents=5, min_queries_for_clustering=10)
 
-    # Cluster 1: centered at [-5, -5, ...]
-    cluster_1 = np.random.randn(30, 128).astype(np.float32) - 5.0
+        # First 9 queries should return -1
+        for i in range(9):
+            detector.add_query_difficulty(0.5 + i * 0.1)
+            intent = detector.detect_intent(0.5)
+            assert intent == -1, f"Query {i}: Expected -1 during cold start"
 
-    # Cluster 2: centered at [0, 10, ...]
-    cluster_2 = np.random.randn(30, 128).astype(np.float32)
-    cluster_2[:, :64] += 10.0
+    def test_clustering_activates_at_threshold(self):
+        """Test that clustering activates after min_queries."""
+        detector = IntentDetector(n_intents=3, min_queries_for_clustering=10)
 
-    all_queries = np.vstack([cluster_0, cluster_1, cluster_2])
+        # Add 10 queries with varying difficulty
+        for i in range(10):
+            detector.add_query_difficulty(i * 0.1)  # 0.0 to 0.9
 
-    # Normalize
-    all_queries = all_queries / np.linalg.norm(all_queries, axis=1, keepdims=True)
+        # Clustering should now be active
+        assert detector.is_active()
 
-    return all_queries
-
-
-class TestIntentDetectorInitialization:
-    """Test detector initialization."""
-
-    def test_default_initialization(self):
-        """Should initialize with default parameters."""
-        detector = IntentDetector()
-
-        assert detector.k_intents == 5
-        assert detector.min_queries == 30
-        assert detector.kmeans is None
-        assert detector.total_queries == 0
-
-    def test_custom_parameters(self):
-        """Should accept custom parameters."""
-        detector = IntentDetector(
-            k_intents=3,
-            min_queries_for_clustering=20,
-            confidence_threshold=0.8
-        )
-
-        assert detector.k_intents == 3
-        assert detector.min_queries == 20
-        assert detector.confidence_threshold == 0.8
+        # Should return valid intent
+        intent = detector.detect_intent(0.5)
+        assert 0 <= intent <= 2
 
 
-class TestColdStartBehavior:
-    """Test behavior before clustering is initialized."""
+class TestIntentDetectorClustering:
+    """Tests for difficulty clustering."""
 
-    def test_cold_start_returns_no_intent(self):
-        """Should return -1 intent during cold start."""
-        detector = IntentDetector(min_queries_for_clustering=10)
+    def test_easy_and_hard_queries_separate(self):
+        """Test that easy and hard queries get different intents."""
+        detector = IntentDetector(n_intents=3, min_queries_for_clustering=10)
 
-        query = np.random.randn(128).astype(np.float32)
-        intent_id, confidence = detector.detect_intent(query)
-
-        assert intent_id == -1
-        assert confidence == 0.0
-
-    def test_queries_added_to_buffer(self):
-        """Should add queries to buffer during cold start."""
-        detector = IntentDetector(min_queries_for_clustering=10)
-
+        # Add 5 easy queries (low difficulty)
         for _ in range(5):
-            query = np.random.randn(128).astype(np.float32)
-            detector.detect_intent(query)
+            detector.add_query_difficulty(0.1 + np.random.rand() * 0.1)
 
-        assert len(detector.query_buffer) == 5
+        # Add 5 hard queries (high difficulty)
+        for _ in range(5):
+            detector.add_query_difficulty(0.8 + np.random.rand() * 0.2)
 
-    def test_clustering_initializes_after_min_queries(self):
-        """Should initialize clustering after minimum queries."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=10)
+        # Clustering should be active now
+        assert detector.is_active()
 
-        queries = np.random.randn(10, 128).astype(np.float32)
+        # Easy query should get low intent
+        easy_intent = detector.detect_intent(0.15)
+        assert easy_intent == 0, "Easy query should get intent 0"
 
-        for query in queries:
-            detector.detect_intent(query)
+        # Hard query should get high intent
+        hard_intent = detector.detect_intent(0.95)
+        assert hard_intent == 2, "Hard query should get intent 2"
 
-        assert detector.kmeans is not None
-        assert detector.cluster_centroids is not None
+    def test_five_intent_tiers(self):
+        """Test clustering with 5 intent tiers."""
+        detector = IntentDetector(n_intents=5, min_queries_for_clustering=20)
 
+        # Generate data across full difficulty range
+        for i in range(20):
+            difficulty = i / 20.0  # 0.0 to 0.95
+            detector.add_query_difficulty(difficulty)
 
-class TestIntentDetection:
-    """Test intent detection with clustering."""
+        assert detector.is_active()
 
-    def test_intent_assignment(self, clustered_queries):
-        """Should assign intents after clustering."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=20)
+        # Test boundary queries
+        very_easy = detector.detect_intent(0.05)
+        medium = detector.detect_intent(0.5)
+        very_hard = detector.detect_intent(0.95)
 
-        # Initialize clustering
-        for query in clustered_queries[:20]:
-            detector.detect_intent(query)
+        assert very_easy < medium < very_hard
+        assert 0 <= very_easy <= 4
+        assert 0 <= medium <= 4
+        assert 0 <= very_hard <= 4
 
-        # Detect intent for new query from cluster 0
-        test_query = clustered_queries[0] + np.random.randn(128).astype(np.float32) * 0.1
-        test_query = test_query / np.linalg.norm(test_query)
-
-        intent_id, confidence = detector.detect_intent(test_query)
-
-        assert 0 <= intent_id < 3
-        assert 0.0 <= confidence <= 1.0
-
-    def test_consistent_intent_for_similar_queries(self, clustered_queries):
-        """Similar queries should get same intent."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=20)
-
-        # Initialize
-        for query in clustered_queries[:20]:
-            detector.detect_intent(query)
-
-        # Test similar queries from cluster 0
-        intent_ids = []
-        for i in range(5):
-            query = clustered_queries[20 + i]
-            intent_id, _ = detector.detect_intent(query)
-            intent_ids.append(intent_id)
-
-        # Should assign same intent (or mostly same)
-        assert len(set(intent_ids)) <= 2  # Allow some variance
-
-
-class TestConfidenceScoring:
-    """Test confidence score computation."""
-
-    def test_high_confidence_for_cluster_center(self, clustered_queries):
-        """Query near cluster center should have high confidence."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=20)
-
-        # Initialize
-        for query in clustered_queries[:30]:
-            detector.detect_intent(query)
-
-        # Query very close to cluster 0 center
-        cluster_0_mean = clustered_queries[:30].mean(axis=0)
-        test_query = cluster_0_mean / np.linalg.norm(cluster_0_mean)
-
-        intent_id, confidence = detector.detect_intent(test_query)
-
-        # Should have some confidence (may not be very high for normalized random data)
-        assert 0.0 <= confidence <= 1.0
-        assert intent_id >= 0  # Should assign some intent
-
-    def test_low_confidence_for_ambiguous_query(self, clustered_queries):
-        """Query between clusters should have lower confidence."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=30)
-
-        # Initialize
-        for query in clustered_queries[:30]:
-            detector.detect_intent(query)
-
-        # Query between cluster 0 and cluster 1
-        cluster_0_mean = clustered_queries[:30].mean(axis=0)
-        cluster_1_mean = clustered_queries[30:60].mean(axis=0)
-        midpoint = (cluster_0_mean + cluster_1_mean) / 2
-        test_query = midpoint / np.linalg.norm(midpoint)
-
-        intent_id, confidence = detector.detect_intent(test_query)
-
-        # Confidence should be lower (closer to both clusters)
-        assert 0.0 <= confidence <= 1.0
-
-
-class TestDriftDetection:
-    """Test intent drift detection."""
-
-    def test_no_drift_with_consistent_queries(self, clustered_queries):
-        """Consistent queries should not trigger drift."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=30)
-
-        # Initialize with cluster 0
-        for query in clustered_queries[:30]:
-            detector.detect_intent(query)
-
-        # Continue with more cluster 0 queries (same distribution)
-        for query in clustered_queries[:20]:  # Reuse same cluster 0 queries
-            detector.detect_intent(query)
-
-        drift_detected = detector.check_drift(drift_threshold=2.0)
-
-        # With consistent queries from same distribution, drift is less likely
-        # Just verify it runs without error
-        assert isinstance(drift_detected, bool)
-
-    def test_drift_with_shifting_distribution(self, clustered_queries):
-        """Shifting query distribution should trigger drift."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=30)
-
-        # Initialize with cluster 0
-        for query in clustered_queries[:30]:
-            detector.detect_intent(query)
-
-        # Shift to cluster 1 (very different)
-        for query in clustered_queries[30:60]:
-            detector.detect_intent(query)
-
-        drift_detected = detector.check_drift(drift_threshold=2.0)
-
-        # May or may not detect drift depending on how K-means assigns
-        # Just verify it runs without error
-        assert isinstance(drift_detected, bool)
-
-    def test_recompute_clusters(self, clustered_queries):
-        """Should be able to recompute clusters."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=30)
-
-        # Initialize
-        for query in clustered_queries[:30]:
-            detector.detect_intent(query)
-
-        old_centroids = detector.cluster_centroids.copy()
-
-        # Add more diverse queries
-        for query in clustered_queries[30:60]:
-            detector.detect_intent(query)
-
-        # Recompute
-        detector.recompute_clusters()
-
-        # Centroids should have changed
-        assert not np.allclose(old_centroids, detector.cluster_centroids)
-
-
-class TestClusterStatistics:
-    """Test cluster statistics."""
-
-    def test_get_cluster_sizes(self, clustered_queries):
-        """Should compute cluster sizes correctly."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=30)
-
-        # Initialize with all queries
-        for query in clustered_queries:
-            detector.detect_intent(query)
-
-        sizes = detector.get_cluster_sizes()
-
-        assert len(sizes) == 3
-        assert sum(sizes) > 0
-
-    def test_get_statistics(self, clustered_queries):
-        """Should return comprehensive statistics."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=20)
+    def test_centroid_ordering(self):
+        """Test that centroids are ordered easy to hard."""
+        detector = IntentDetector(n_intents=3, min_queries_for_clustering=10)
 
         # Add queries
-        for query in clustered_queries[:30]:
-            detector.detect_intent(query)
+        for i in range(10):
+            detector.add_query_difficulty(i * 0.1)
+
+        centroids = detector.get_cluster_centroids()
+
+        # Centroids should be in ascending order
+        assert centroids is not None
+        assert len(centroids) == 3
+        assert centroids[0] < centroids[1] < centroids[2]
+
+
+class TestIntentDetectorStatistics:
+    """Tests for statistics and introspection."""
+
+    def test_get_statistics_before_clustering(self):
+        """Test statistics during cold start."""
+        detector = IntentDetector(n_intents=5)
+
+        for i in range(5):
+            detector.add_query_difficulty(0.5)
 
         stats = detector.get_statistics()
 
-        assert stats["total_queries"] == 30
+        assert stats["total_queries"] == 5
+        assert stats["clustering_active"] is False
+        assert stats["n_intents"] == 5
+        assert "centroids" not in stats  # Not available during cold start
+
+    def test_get_statistics_after_clustering(self):
+        """Test statistics after clustering active."""
+        detector = IntentDetector(n_intents=3, min_queries_for_clustering=10)
+
+        for i in range(10):
+            detector.add_query_difficulty(i * 0.1)
+
+        stats = detector.get_statistics()
+
+        assert stats["total_queries"] == 10
         assert stats["clustering_active"] is True
-        assert stats["k_intents"] == 3
-        assert "cluster_sizes" in stats
-        assert "confidence_rate" in stats
+        assert stats["n_intents"] == 3
+        assert "centroids" in stats
+        assert len(stats["centroids"]) == 3
+        assert sum(stats["cluster_sizes"]) == 10  # All queries assigned
 
-    def test_get_intent_centroid(self, clustered_queries):
-        """Should return centroid for valid intent."""
-        detector = IntentDetector(k_intents=3, min_queries_for_clustering=20)
+    def test_get_cluster_sizes(self):
+        """Test cluster size computation."""
+        detector = IntentDetector(n_intents=2, min_queries_for_clustering=10)
 
-        # Initialize
-        for query in clustered_queries[:30]:
-            detector.detect_intent(query)
+        # Add 6 easy, 4 hard queries
+        for _ in range(6):
+            detector.add_query_difficulty(0.1)
+        for _ in range(4):
+            detector.add_query_difficulty(0.9)
 
-        # Get centroid for intent 0
-        centroid = detector.get_intent_centroid(0)
+        sizes = detector.get_cluster_sizes()
 
-        assert centroid is not None
-        assert centroid.shape == (128,)
+        assert len(sizes) == 2
+        assert sum(sizes) == 10
+        # Exact distribution depends on K-means, but should be roughly [6, 4]
+        assert 4 <= sizes[0] <= 7  # Easy cluster
+        assert 3 <= sizes[1] <= 6  # Hard cluster
 
-    def test_get_intent_centroid_invalid(self):
-        """Should return None for invalid intent."""
-        detector = IntentDetector()
+    def test_get_intent_difficulty_range(self):
+        """Test difficulty range per intent."""
+        detector = IntentDetector(n_intents=2, min_queries_for_clustering=10)
 
-        centroid = detector.get_intent_centroid(0)
+        # Add easy queries (0.1-0.3)
+        for i in range(5):
+            detector.add_query_difficulty(0.1 + i * 0.04)
 
-        assert centroid is None
+        # Add hard queries (0.7-0.9)
+        for i in range(5):
+            detector.add_query_difficulty(0.7 + i * 0.04)
+
+        # Get ranges
+        easy_range = detector.get_intent_difficulty_range(0)
+        hard_range = detector.get_intent_difficulty_range(1)
+
+        assert easy_range is not None
+        assert hard_range is not None
+
+        # Easy range should be lower than hard range
+        assert easy_range[1] < hard_range[0]  # Max easy < Min hard
 
 
-class TestBufferManagement:
-    """Test query buffer management."""
+class TestIntentDetectorEdgeCases:
+    """Tests for edge cases and error handling."""
 
-    def test_buffer_size_limit(self):
-        """Should respect buffer size limit."""
+    def test_all_same_difficulty(self):
+        """Test with all queries having same difficulty."""
+        detector = IntentDetector(n_intents=3, min_queries_for_clustering=10)
+
+        # All queries have difficulty 0.5
+        for _ in range(10):
+            detector.add_query_difficulty(0.5)
+
+        # Should still work (all in one cluster)
+        assert detector.is_active()
+        intent = detector.detect_intent(0.5)
+        assert 0 <= intent <= 2
+
+    def test_very_few_intents(self):
+        """Test with only 2 intents."""
+        detector = IntentDetector(n_intents=2, min_queries_for_clustering=10)
+
+        for i in range(10):
+            detector.add_query_difficulty(i * 0.1)
+
+        assert detector.is_active()
+        centroids = detector.get_cluster_centroids()
+        assert len(centroids) == 2
+        assert centroids[0] < centroids[1]
+
+    def test_more_intents_than_queries(self):
+        """Test when n_intents > n_queries (edge case for K-means)."""
+        # K-means requires n_clusters <= n_samples
+        # This should still work as we require min 10 queries
+        detector = IntentDetector(n_intents=3, min_queries_for_clustering=10)
+
+        for i in range(10):
+            detector.add_query_difficulty(i * 0.1)
+
+        assert detector.is_active()
+
+    def test_buffer_overflow(self):
+        """Test that buffer respects max size."""
         detector = IntentDetector(
+            n_intents=3,
             min_queries_for_clustering=10,
-            query_buffer_size=50
+            difficulty_buffer_size=50
         )
 
-        queries = np.random.randn(100, 128).astype(np.float32)
+        # Add 100 queries (exceeds buffer size)
+        for i in range(100):
+            detector.add_query_difficulty(i * 0.01)
 
-        for query in queries:
-            detector.detect_intent(query)
+        # Buffer should have only last 50
+        assert len(detector.difficulty_buffer) == 50
+        assert detector.total_queries == 100
 
-        assert len(detector.query_buffer) == 50  # Max size
 
-    def test_buffer_evicts_oldest(self):
-        """Should evict oldest queries when buffer is full."""
-        detector = IntentDetector(
-            min_queries_for_clustering=10,
-            query_buffer_size=20
-        )
-
-        # Add 30 unique queries
-        for i in range(30):
-            query = np.ones(128, dtype=np.float32) * i
-            detector.detect_intent(query)
-
-        # Buffer should have last 20 queries
-        assert len(detector.query_buffer) == 20
-
-        # First query should be from iteration 10 (0-9 evicted)
-        first_in_buffer = detector.query_buffer[0]
-        expected = np.ones(128, dtype=np.float32) * 10
-
-        assert np.allclose(first_in_buffer, expected)
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

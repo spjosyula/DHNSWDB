@@ -5,15 +5,16 @@ This module implements contextual multi-armed bandit learning for ef_search sele
 Theoretical Foundation:
 - **Problem**: Contextual Multi-Armed Bandit
 - **Arms (Actions)**: Different ef_search values [50, 75, 100, 150, 200, 250]
-- **Context**: Query intent (from K-means clustering)
-- **Reward**: Efficiency = satisfaction / latency_seconds
-- **Goal**: Learn Q(intent, ef_search) = expected efficiency
+- **Context**: Query intent (from K-means clustering on query difficulty)
+- **Reward**: Recall@k (fraction of ground truth neighbors retrieved)
+- **Goal**: Learn Q(intent, ef_search) = expected recall
 
-Algorithm: Action-Value Q-Learning with Epsilon-Greedy Exploration
-- Track Q(intent, ef) = average efficiency for each (intent, ef_search) pair
-- Exploitation: Select argmax_ef Q(intent, ef) for current intent
-- Exploration: Try random ef with probability epsilon
-- Update: Q(intent, ef) ← running average of observed efficiencies
+Algorithm: Action-Value Q-Learning with Phased Cold Start
+- Phase 1 (queries 1-20): Uniform random exploration
+- Phase 2 (queries 21-50): Epsilon-greedy with ε=0.3
+- Phase 3 (queries 51+): Full UCB1 or epsilon-greedy
+- Track Q(intent, ef) = average recall for each (intent, ef_search) pair
+- Update: Q(intent, ef) ← running average of observed recall values
 """
 
 from typing import Dict, List, Any
@@ -25,8 +26,15 @@ class EfSearchSelector:
     """Q-learning based ef_search selector for intent-aware adaptation.
 
     Uses action-value Q-learning to learn which ef_search values maximize
-    efficiency (satisfaction/latency) for each query intent.
+    recall@k for each query intent. Implements phased cold start:
+    - Phase 1 (queries 1-20): Uniform random exploration
+    - Phase 2 (queries 21-50): Epsilon-greedy with ε=0.3
+    - Phase 3 (queries 51+): Full UCB1 or epsilon-greedy
     """
+
+    # Phased cold start thresholds
+    PHASE_1_THRESHOLD = 20  # Uniform random
+    PHASE_2_THRESHOLD = 50  # ε-greedy with high epsilon
 
     def __init__(
         self,
@@ -124,7 +132,11 @@ class EfSearchSelector:
             return 180.0
 
     def select_ef(self, intent_id: int, confidence: float, confidence_threshold: float = 0.5) -> int:
-        """Select ef_search using epsilon-greedy or UCB1 strategy.
+        """Select ef_search using phased cold start strategy.
+
+        Phase 1 (queries 1-20): Uniform random exploration
+        Phase 2 (queries 21-50): Epsilon-greedy with ε=0.3
+        Phase 3 (queries 51+): Full UCB1 or epsilon-greedy
 
         Args:
             intent_id: Query intent cluster ID
@@ -142,25 +154,47 @@ class EfSearchSelector:
         if intent_id >= self.k_intents:
             return self.default_ef
 
-        # Route to appropriate selection strategy
-        if self.use_ucb1:
-            return self._select_ef_ucb1(intent_id)
-        else:
-            return self._select_ef_epsilon_greedy(intent_id)
+        # Phase 1: Uniform random exploration (queries 1-20)
+        if self.total_updates < self.PHASE_1_THRESHOLD:
+            return self._select_ef_uniform_random()
 
-    def _select_ef_epsilon_greedy(self, intent_id: int) -> int:
+        # Phase 2: ε-greedy with high epsilon (queries 21-50)
+        elif self.total_updates < self.PHASE_2_THRESHOLD:
+            return self._select_ef_epsilon_greedy(intent_id, epsilon_override=0.3)
+
+        # Phase 3: Full UCB1 or standard ε-greedy (queries 51+)
+        else:
+            if self.use_ucb1:
+                return self._select_ef_ucb1(intent_id)
+            else:
+                return self._select_ef_epsilon_greedy(intent_id)
+
+    def _select_ef_uniform_random(self) -> int:
+        """Select ef_search uniformly at random (Phase 1).
+
+        Returns:
+            ef_search value selected randomly
+        """
+        import random
+        return random.choice(self.ef_candidates)
+
+    def _select_ef_epsilon_greedy(self, intent_id: int, epsilon_override: float = None) -> int:
         """Select ef_search using epsilon-greedy strategy.
 
         Args:
             intent_id: Query intent cluster ID
+            epsilon_override: Optional epsilon value to override self.exploration_rate
 
         Returns:
             ef_search value to use for this query
         """
         import random
 
+        # Use override epsilon if provided (for Phase 2), otherwise use self.exploration_rate
+        epsilon = epsilon_override if epsilon_override is not None else self.exploration_rate
+
         # Epsilon-greedy strategy
-        if random.random() < self.exploration_rate:
+        if random.random() < epsilon:
             # EXPLORATION: Try random ef_search value
             return random.choice(self.ef_candidates)
 
@@ -168,7 +202,7 @@ class EfSearchSelector:
         q_values = {}
         for ef in self.ef_candidates:
             if len(self.q_table[intent_id][ef]) > 0:
-                # Q(intent, ef) = average efficiency observed
+                # Q(intent, ef) = average recall observed
                 q_values[ef] = np.mean(self.q_table[intent_id][ef])
             else:
                 # Optimistic initialization: unexplored actions get high value
@@ -184,7 +218,7 @@ class EfSearchSelector:
 
         UCB1 formula: Q(a) + c * sqrt(ln(N) / n(a))
         where:
-        - Q(a): average reward for action a
+        - Q(a): average recall for action a
         - c: exploration constant (typically sqrt(2))
         - N: total actions taken for this intent
         - n(a): number of times action a was taken
@@ -210,7 +244,7 @@ class EfSearchSelector:
         for ef in self.ef_candidates:
             n_a = self.action_counts[intent_id][ef]
             if n_a > 0 and len(self.q_table[intent_id][ef]) > 0:
-                # Q(a): average efficiency observed
+                # Q(a): average recall observed
                 q_mean = np.mean(self.q_table[intent_id][ef])
 
                 # Exploration bonus: c * sqrt(ln(N) / n(a))
@@ -230,46 +264,58 @@ class EfSearchSelector:
         self,
         intent_id: int,
         ef_used: int,
-        satisfaction: float,
-        latency_ms: float,
+        recall: float,
     ) -> None:
-        """Update Q-table based on observed reward (efficiency).
+        """Update Q-table based on observed reward (recall@k).
 
-        This is the Q-learning update: append the observed efficiency to
+        This is the Q-learning update: append the observed recall to
         Q(intent, ef_used). The Q-value is the running average of all
-        observed efficiencies for this (intent, ef) pair.
+        observed recall values for this (intent, ef) pair.
 
         Args:
             intent_id: Intent that was detected
             ef_used: ef_search value that was used
-            satisfaction: Satisfaction score from feedback (0-1)
-            latency_ms: Query latency in milliseconds
+            recall: Recall@k value (fraction of ground truth neighbors retrieved, 0-1)
         """
         # Validate inputs
         if intent_id < 0 or intent_id >= self.k_intents:
             return
 
-        if latency_ms <= 0:
+        if not (0.0 <= recall <= 1.0):
             return
 
-        # Compute reward: efficiency (satisfaction per second)
-        latency_sec = latency_ms / 1000.0
-        efficiency = satisfaction / latency_sec
+        # Reward is recall directly (no latency involved)
+        reward = recall
 
-        # Update Q-table: Add this efficiency observation for Q(intent, ef_used)
+        # Update Q-table: Add this recall observation for Q(intent, ef_used)
         if ef_used in self.q_table[intent_id]:
-            self.q_table[intent_id][ef_used].append(efficiency)
+            self.q_table[intent_id][ef_used].append(reward)
             self.action_counts[intent_id][ef_used] += 1
         else:
             # ef_used not in candidates (e.g., user override)
             # We can still track it for logging, but won't use in selection
             pass
 
-        # Increment total updates for GLIE decay
+        # Increment total updates (used for phased cold start)
         self.total_updates += 1
 
+    def get_current_phase(self) -> int:
+        """Get current phase of cold start.
+
+        Returns:
+            1: Uniform random (queries 1-20)
+            2: Epsilon-greedy with high ε (queries 21-50)
+            3: Full UCB1 or standard ε-greedy (queries 51+)
+        """
+        if self.total_updates < self.PHASE_1_THRESHOLD:
+            return 1
+        elif self.total_updates < self.PHASE_2_THRESHOLD:
+            return 2
+        else:
+            return 3
+
     def decay_exploration(self, min_rate: float = None, decay_factor: float = 0.95) -> None:
-        """Gradually reduce exploration rate over time.
+        """Gradually reduce exploration rate over time (Phase 3 only).
 
         Supports three modes:
         1. None: epsilon stays fixed (RECOMMENDED based on A/B testing)
@@ -281,7 +327,7 @@ class EfSearchSelector:
             decay_factor: Multiplicative decay factor (multiplicative mode only)
 
         Note: A/B testing with 350+ queries showed GLIE decay provides no significant
-        improvement over fixed epsilon=0.15 (-0.4% efficiency change). The theoretical
+        improvement over fixed epsilon=0.15 (-0.4% recall change). The theoretical
         benefit exists but is negligible in practice for small action spaces with fast
         convergence. Recommended: use epsilon_decay_mode="none" with eps=0.15.
         """
@@ -303,11 +349,20 @@ class EfSearchSelector:
         """Get ef_search selection statistics with Q-table values.
 
         Returns:
-            Dictionary with Q-values, best ef per intent, and action counts
+            Dictionary with Q-values, best ef per intent, action counts, and current phase
         """
+        current_phase = self.get_current_phase()
+        phase_names = {
+            1: "uniform_random",
+            2: "epsilon_greedy_high",
+            3: "full_exploration"
+        }
+
         stats = {
             "default_ef": self.default_ef,
             "k_intents": self.k_intents,
+            "current_phase": current_phase,
+            "phase_name": phase_names[current_phase],
             "exploration_strategy": "ucb1" if self.use_ucb1 else "epsilon_greedy",
             "exploration_rate": self.exploration_rate,
             "initial_exploration_rate": self.initial_exploration_rate,

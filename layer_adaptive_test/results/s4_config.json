@@ -1,0 +1,27 @@
+{
+  "config": {
+    "corpus_size": 50000,
+    "query_count": 1000,
+    "dimensions": 768,
+    "M": 24,
+    "ef_construction": 200,
+    "k": 10,
+    "ef_search": 100,
+    "hard_query_ratio": 0.7,
+    "medium_query_ratio": 0.2,
+    "easy_query_ratio": 0.1,
+    "model_name": "all-mpnet-base-v2",
+    "corpus_seed": 42,
+    "query_seed": 43
+  },
+  "graph_stats": {
+    "max_level": 18,
+    "entry_point": 43402,
+    "total_nodes": 50000
+  },
+  "query_distribution": {
+    "hard": 904,
+    "medium": 93,
+    "easy": 3
+  }
+}
