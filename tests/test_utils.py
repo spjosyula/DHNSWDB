@@ -54,6 +54,53 @@ def test_assign_layer_with_custom_multiplier():
     ), "Higher multiplier should produce higher layers"
 
 
+def test_assign_layer_distribution_with_M_parameter():
+    """Test that M parameter correctly controls layer distribution (HNSW paper spec)"""
+    np.random.seed(42)
+    n_samples = 10000
+
+    # Test M=16: Expected ~6.25% at layer 1
+    layers_m16 = [assign_layer(M=16) for _ in range(n_samples)]
+    layer_1_pct_m16 = layers_m16.count(1) / n_samples
+
+    # Expected probability for layer 1 with M=16: (1/16) = 0.0625 = 6.25%
+    # Allow 20% tolerance (5%-7.5%)
+    assert 0.05 < layer_1_pct_m16 < 0.075, f"M=16 should have ~6.25% at layer 1, got {layer_1_pct_m16:.1%}"
+
+    # Test M=24: Expected ~4.17% at layer 1
+    np.random.seed(42)
+    layers_m24 = [assign_layer(M=24) for _ in range(n_samples)]
+    layer_1_pct_m24 = layers_m24.count(1) / n_samples
+
+    # Expected probability for layer 1 with M=24: (1/24) = 0.0417 = 4.17%
+    # Allow 20% tolerance (3.3%-5%)
+    assert 0.033 < layer_1_pct_m24 < 0.050, f"M=24 should have ~4.17% at layer 1, got {layer_1_pct_m24:.1%}"
+
+    # M=24 should have fewer nodes at layer 1 than M=16
+    assert layer_1_pct_m24 < layer_1_pct_m16, "Higher M should result in fewer nodes at higher layers"
+
+
+def test_assign_layer_matches_graph_level_multiplier():
+    """Test that HNSWGraph's level_multiplier is correctly derived from M"""
+    from dynhnsw.hnsw.graph import HNSWGraph
+
+    # Test with M=16
+    graph_m16 = HNSWGraph(dimension=128, M=16)
+    expected_multiplier_m16 = 1.0 / np.log(16)
+    assert abs(graph_m16.level_multiplier - expected_multiplier_m16) < 1e-6, \
+        f"Graph level_multiplier should be 1/ln(M)=1/ln(16)={expected_multiplier_m16:.6f}"
+
+    # Test with M=24
+    graph_m24 = HNSWGraph(dimension=128, M=24)
+    expected_multiplier_m24 = 1.0 / np.log(24)
+    assert abs(graph_m24.level_multiplier - expected_multiplier_m24) < 1e-6, \
+        f"Graph level_multiplier should be 1/ln(M)=1/ln(24)={expected_multiplier_m24:.6f}"
+
+    # Test explicit level_multiplier override
+    graph_custom = HNSWGraph(dimension=128, M=16, level_multiplier=0.5)
+    assert graph_custom.level_multiplier == 0.5, "Explicit level_multiplier should override M"
+
+
 def test_select_neighbors_simple_basic():
     """Select M nearest neighbors from candidates"""
     candidates = [10, 20, 30, 40, 50]

@@ -51,7 +51,7 @@ def build_graph(vectors, M=16):
     builder = HNSWBuilder(graph=graph)
 
     for i, vec in enumerate(vectors):
-        level = assign_layer(level_multiplier=graph.level_multiplier)
+        level = assign_layer(M=graph.M)
         builder.insert(vector=vec, node_id=i, level=level)
         if (i + 1) % 1000 == 0:
             print(f"  {i+1}/{len(vectors)}")

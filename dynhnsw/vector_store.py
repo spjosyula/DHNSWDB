@@ -57,6 +57,7 @@ class VectorStore:
         ef_search: int = None,
         normalize: bool = True,
         enable_intent_detection: bool = True,
+        enable_adaptive_thresholds: bool = False,
         k_intents: int = None,
         learning_rate: float = 0.1,
         min_queries_for_clustering: int = None,
@@ -72,7 +73,8 @@ class VectorStore:
             M: HNSW max connections per node (typically 16-64)
             ef_search: Default search parameter (higher = better recall, slower)
             normalize: Whether to normalize vectors to unit length (recommended for cosine similarity)
-            enable_intent_detection: Enable intent-aware adaptive search
+            enable_intent_detection: Enable layer-adaptive multi-path search
+            enable_adaptive_thresholds: Enable learning of optimal difficulty thresholds
             k_intents: Number of intent clusters for adaptive search
             learning_rate: Learning rate for Q-learning (legacy parameter, not used)
             min_queries_for_clustering: Minimum queries before intent clustering starts
@@ -125,6 +127,7 @@ class VectorStore:
             learning_rate=learning_rate,
             enable_adaptation=enable_intent_detection,
             enable_intent_detection=enable_intent_detection,
+            enable_adaptive_thresholds=enable_adaptive_thresholds,
             min_queries_for_clustering=min_queries_for_clustering,
             config=self.config,  # Pass config to searcher
         )
@@ -213,8 +216,8 @@ class VectorStore:
         # Insert each vector into the graph
         inserted_external_ids = []
         for vec, ext_id, meta in zip(processed_vectors, ids, metadata):
-            # Assign layer for this node
-            level = assign_layer()
+            # Assign layer for this node using graph's M parameter
+            level = assign_layer(M=self._graph.M)
 
             # Insert into graph
             node_id = self._next_id
@@ -330,11 +333,11 @@ class VectorStore:
             if ext_id in self._id_to_node:
                 relevant_node_ids.add(self._id_to_node[ext_id])
 
-        # Pass feedback to intent-aware searcher (with latency)
+        # Pass feedback to intent-aware searcher
         self._searcher.provide_feedback(
             query=self._last_query_vector,
             result_ids=self._last_result_node_ids,
-            relevant_ids=relevant_node_ids,
+            ground_truth_ids=list(relevant_node_ids),
             latency_ms=self._last_latency_ms
         )
 

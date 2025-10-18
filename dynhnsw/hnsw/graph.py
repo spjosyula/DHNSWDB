@@ -91,7 +91,7 @@ class HNSWGraph:
         dimension: int,
         M: int = 16,
         M_L: Optional[int] = None,
-        level_multiplier: float = 1.0 / np.log(2.0),
+        level_multiplier: Optional[float] = None,
     ) -> None:
         """
         Initialize an empty HNSW graph.
@@ -100,12 +100,18 @@ class HNSWGraph:
             dimension: Dimensionality of vectors to store
             M: Maximum number of neighbors per node at layers > 0 (typical: 16-64)
             M_L: Maximum neighbors at layer 0 (default: 2*M for denser base layer)
-            level_multiplier: Controls layer distribution (default: 1/ln(2))
+            level_multiplier: Controls layer distribution (default: 1/ln(M) per HNSW paper)
         """
         self.dimension = dimension
         self.M = M
         self.M_L = M_L if M_L is not None else 2 * M  # Layer 0 has more connections
-        self.level_multiplier = level_multiplier
+
+        # Calculate level_multiplier from M per HNSW paper (Malkov & Yashunin 2016)
+        # Formula: mL = 1/ln(M) ensures exponential decay P(layer >= l) = (1/M)^l
+        if level_multiplier is None:
+            self.level_multiplier = 1.0 / np.log(M)
+        else:
+            self.level_multiplier = level_multiplier
 
         # Storage for all nodes
         self.nodes: Dict[int, HNSWNode] = {}
@@ -117,13 +123,14 @@ class HNSWGraph:
         # Counter for generating unique node IDs
         self._next_id = 0
 
-    def add_node(self, vector: Vector, level: int) -> int:
+    def add_node(self, vector: Vector, level: int, node_id: Optional[int] = None) -> int:
         """
         Add a new node to the graph structure (without connecting it yet).
 
         Args:
             vector: Vector data for the node
             level: Maximum layer this node should appear in
+            node_id: Optional explicit node ID to use (if None, auto-generates)
 
         Returns:
             The ID assigned to the new node
@@ -134,9 +141,14 @@ class HNSWGraph:
                 f"Vector dimension {len(vector)} doesn't match graph dimension {self.dimension}"
             )
 
-        # Create the node with a unique ID
-        node_id = self._next_id
-        self._next_id += 1
+        # Use provided node_id or generate new one
+        if node_id is None:
+            node_id = self._next_id
+            self._next_id += 1
+        else:
+            # Update counter if provided ID is higher than current
+            if node_id >= self._next_id:
+                self._next_id = node_id + 1
 
         node = HNSWNode(node_id, vector, level)
         self.nodes[node_id] = node

@@ -337,7 +337,7 @@ def build_large_graph(vectors: np.ndarray, M: int = 24,
     start_time = time.time()
 
     for i, vec in enumerate(vectors):
-        level = assign_layer(level_multiplier=graph.level_multiplier)
+        level = assign_layer(M=graph.M)
         builder.insert(vector=vec, node_id=i, level=level)
 
         if (i + 1) % 2500 == 0:

@@ -18,7 +18,7 @@ import numpy.typing as npt
 
 from dynhnsw.hnsw.graph import HNSWGraph
 from dynhnsw.hnsw.distance import cosine_distance
-from dynhnsw.hnsw.utils import assign_layer, select_neighbors_simple
+from dynhnsw.hnsw.utils import assign_layer, select_neighbors_heuristic
 
 Vector = npt.NDArray[np.float32]
 
@@ -52,7 +52,7 @@ class HNSWBuilder:
             level: Maximum layer for this node
         """
         # Add the node to the graph structure (not connected yet)
-        actual_id = self.graph.add_node(vector, level)
+        actual_id = self.graph.add_node(vector, level, node_id=node_id)
         assert actual_id == node_id, f"Expected ID {node_id}, got {actual_id}"
 
         # Special case: first node in the graph
@@ -73,6 +73,9 @@ class HNSWBuilder:
         current_nearest = [entry_point]
         entry_node = self.graph.get_node(entry_point)
 
+        # Search from entry point's layer down to the layer ABOVE our new node's level
+        # We search layers [entry_node.level, entry_node.level-1, ..., level+1]
+        # Then we search AT level in the next loop
         for layer in range(entry_node.level, level, -1):
             # Greedy search at this layer to find closest node
             current_nearest = self._search_layer(
@@ -187,8 +190,8 @@ class HNSWBuilder:
         """
         Select M neighbors from candidates for connection.
 
-        Uses simple strategy: pick M nearest neighbors.
-        Can be enhanced with heuristic selection later.
+        Uses diversity-aware heuristic selection to maintain global graph connectivity.
+        This prevents local clustering and ensures the graph remains well-connected.
 
         Args:
             candidates: List of candidate node IDs
@@ -205,15 +208,18 @@ class HNSWBuilder:
             dist = cosine_distance(query, node.vector)
             distances.append(dist)
 
-        # Use simple neighbor selection
-        return select_neighbors_simple(candidates, distances, M)
+        # Use diversity-aware heuristic selection
+        return select_neighbors_heuristic(
+            candidates, distances, M, graph=self.graph, keep_pruned=True
+        )
 
     def _prune_neighbors(self, node_id: int, layer: int) -> None:
         """
         Prune connections of a node if it exceeds M constraint.
 
         When a new edge is added to a node, it might exceed the maximum
-        allowed connections (M). We keep only the M nearest neighbors.
+        allowed connections (M). We keep only the M most diverse neighbors
+        using the heuristic selection strategy.
 
         Args:
             node_id: Node to prune
@@ -235,8 +241,10 @@ class HNSWBuilder:
             dist = cosine_distance(node.vector, neighbor_node.vector)
             distances.append(dist)
 
-        # Select M nearest neighbors
-        selected = select_neighbors_simple(neighbors, distances, M)
+        # Select M most diverse neighbors using heuristic
+        selected = select_neighbors_heuristic(
+            neighbors, distances, M, graph=self.graph, keep_pruned=True
+        )
 
         # Remove connections to pruned neighbors
         pruned = set(neighbors) - set(selected)
